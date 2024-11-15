@@ -1,7 +1,8 @@
 # Conversational agent with RAG
 #
 #from openai import OpenAI
-from langchain.llms import OpenAI
+import asyncio
+from openai import AsyncOpenAI
 from langchain_community.vectorstores import Chroma
 from langchain_community.embeddings import HuggingFaceEmbeddings
 from langchain_community.document_loaders import DirectoryLoader, UnstructuredFileLoader, UnstructuredMarkdownLoader
@@ -12,36 +13,35 @@ from langchain_core.output_parsers import StrOutputParser
 import streamlit as st
 
 template_1 = """
-    Answer the question based only on the following context:
-    {context} 
-    The answer has to specify the source document used for the answer.
-    If you can not answer the question based on the context, answer the question based on your own knowledge but beginning the sentence with "The relevant information is not available in the context, but based on my own knowledge".
+    Act as a techinal expert. Answer the question based only on the following context:
+    {context}.
     Question: {question}
     """
     # Point to the local server
-client = OpenAI(base_url="http://localhost:1234/v1", api_key="not-needed")
+client = AsyncOpenAI(base_url="http://localhost:1234/v1", api_key="not-needed")
 prompt = ChatPromptTemplate.from_template(template_1)
-qa_chain = prompt | client | StrOutputParser()
-def main():
 
-
-
+@st.cache_resource
+def prepareDB():
     markdown_path = "./knowledgebase/"
     markdown_loader = DirectoryLoader(markdown_path, glob='./*.md', loader_cls=UnstructuredMarkdownLoader)
     markdown_docs = markdown_loader.load()
 
-    text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=00)
+    text_splitter = RecursiveCharacterTextSplitter(chunk_size=500, chunk_overlap=30)
     docs = text_splitter.split_documents(markdown_docs)
 
     # Generate the embeddings
     model="sentence-transformers/all-MiniLM-L12-v2"
     embeddings = HuggingFaceEmbeddings(model_name=model)
     vector_db= Chroma.from_documents(documents=docs,embedding=embeddings,persist_directory="./chroma_db")
+    return vector_db
 
+async def main():
+    vector_db=prepareDB()
     #embedding_function=HuggingFaceEmbeddings(model_name="sentence-transformers/all-MiniLM-L6-v2")
     #vector_db = Chroma(documents=docs ,persist_directory="./chroma_db_nccn", embedding_function=embedding_function)
     history = [
-        {"role": "system", "content": "You are an intelligent assistant. You always provide well-reasoned answers that are both correct and helpful."},
+        {"role": "assistant", "content": "Ask questions for PowerLogic HU280 RTU"},
         ]
     if "history" not in st.session_state:
         st.session_state.history=history
@@ -51,33 +51,8 @@ def main():
     for history in st.session_state.history:
         with st.chat_message(history["role"]):
             st.markdown(history["content"])
-    # completion = client.chat.completions.create(
-    #     model="local-model",
-    #     messages=history,
-    #     temperature=0.7,
-    #     stream=True,
-    # )
 
     new_message = {"role": "assistant", "content": ""}
-    
-    # for chunk in completion:
-    #     if chunk.choices[0].delta.content:
-    #         print(chunk.choices[0].delta.content, end="", flush=True)
-    #         new_message["content"] += chunk.choices[0].delta.content
-
-    # history.append(new_message)
-    # if(new_message["content"]!=""):
-    #     with st.chat_message(new_message["role"]):
-    #         st.markdown(new_message["content"])
-
-    
-    #Uncomment to see chat history
-    # import json
-    # gray_color = "\033[90m"
-    # reset_color = "\033[0m"
-    # print(f"{gray_color}\n{'-'*20} History dump {'-'*20}\n")
-    # print(json.dumps(history, indent=2))
-    # print(f"\n{'-'*55}\n{reset_color}")
     
     print()
     # next_input = input("> ")
@@ -87,17 +62,28 @@ def main():
         st.session_state.history.append({"role": "user", "content": my_prompt})
 
         print(my_prompt)
-        search_results = vector_db.similarity_search(my_prompt, k=10)
+        
+        search_results = vector_db.similarity_search(my_prompt, k=3)
         some_context = ""
         for result in search_results:
             some_context += result.page_content + "\n\n"    
-        #chain = LLMChain(llm=client, prompt=prompt)
-        #respuesta = chain.run({"question": my_prompt, "context": some_context})
-        respuesta = qa_chain.invoke({"question": my_prompt, "context": some_context})
-        print(respuesta)
-        respuesta=str(respuesta).replace('\n','\r\n')
-        #history.append({"role": "assistant", "content": respuesta})
-        st.chat_message("assistant").markdown(respuesta)
-        st.session_state.history.append({"role": "assistant", "content": respuesta})
+        
+        prompt_value = template_1.format(context=some_context,question=my_prompt)
+        completion = await client.chat.completions.create(
+        model="local-model",
+        messages=[{"role": "user", "content": prompt_value}],
+        temperature=0.7,
+        stream=True,
+        )
+        new_message = {"role": "assistant", "content": ""}
+        async for chunk in completion:
+            if chunk.choices[0].delta.content:
+                print(chunk.choices[0].delta.content, end="")
+                respuesta=chunk.choices[0].delta.content
+                new_message["content"] += chunk.choices[0].delta.content 
+        if new_message["content"]!="":   
+            st.chat_message("assistant").markdown(new_message["content"])
+            st.session_state.history.append({"role": "assistant", "content": new_message["content"]})
+
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())
