@@ -1,4 +1,7 @@
 langchain
 langchain_community
-langchain_openai
-openai
+langchain-core
+langchain-huggingface
+langchain-text-splitters
+async-openai
+streamlit
